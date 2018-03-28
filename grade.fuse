@@ -1,0 +1,1894 @@
+--[[--
+Grade Fuse
+
+Math for color calculation:
+  A = multiply * (gain-lift)/(whitepoint-blackpoint)
+  B = offset + lift - A*blackpoint
+  output = pow(A*input + B, 1/gamma)
+
+Inspired by
+https://learn.foundry.com/nuke/developers/63/ndkreference/examples/Grade.cpp
+
+I used Stefan Ihringer's (stefan@bildfehler.de) ELinBC_v1_86.Fuse as a base
+for education.
+https://www.steakunderwater.com/VFXPedia/96.0.243.189/images/ELinBC_v1_86.Fuse
+
+Math for HSV->RGB->HSV conversion from wikipedia
+with small improvements for working with negative values.
+https://en.wikipedia.org/wiki/HSL_and_HSV
+
+For TMI conversion as a base I used Stefan Ihringer's article
+http://www.comp-fu.com/2012/05/tmi-color-temperature-correction/
+
+-------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2018 Artem Hlezin (wrk@artemhlezin.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-------------------------------------------------------------------------------
+
+Requires: Fusion 9
+
+Known Issues:
+  Not correct gamma calculation if gamma or pixel has negative values.
+  Usually, you should avoid negative gamma/pixel values. 
+  I kept the ability to use negative values in gamma
+  only for TMI sliders compatibility.
+
+Changelog:
+
+version 1.0, 2018-03-28: Initial release
+--]]--
+
+FuRegisterClass("Grade", CT_Tool, {
+  REGS_Name = "Grade",
+  REGS_Category = "Tools\\Color",
+  REGS_OpIconString = "Gra",
+  REGS_OpDescription = "Grade Node",
+  REGS_Company = "Artem Hlezin",
+	REGS_URL = "http://www.artemhlezin.com",
+  REG_NoMotionBlurCtrls = true,
+	REG_Source_DepthCtrls = true,
+
+  })
+
+function Create()
+
+-------------------- Blackpoint RGBA --------------------
+
+  inNestBlackpoint = self:BeginControlNest("Blackpoint", "Blackpoint", false, {})
+
+  inBlackpointRGB_R = self:AddInput("", "BlackpointRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 10,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+  inBlackpointRGB_G = self:AddInput("", "BlackpointRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 10,
+    IC_ControlID = 1,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+  inBlackpointRGB_B = self:AddInput("", "BlackpointRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 10,
+    IC_ControlID = 2,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Blackpoint HSV --------------------
+
+  inBlackpointHSV_H = self:AddInput("", "BlackpointHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inBlackpointHSV_S = self:AddInput("", "BlackpointHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+  })
+  inBlackpointHSV_V = self:AddInput("", "BlackpointHSV_V", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Value",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Blackpoint TMI --------------------
+
+  inBlackpointTMI_T = self:AddInput("", "BlackpointTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inBlackpointTMI_M = self:AddInput("", "BlackpointTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inBlackpointTMI_I = self:AddInput("", "BlackpointTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+  self:EndControlNest()
+
+  inBlackpointHSV_V2 = self:AddInput("", "BlackpointHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Whitepoint RGBA --------------------
+
+  inNestWhitepoint = self:BeginControlNest("Whitepoint", "Whitepoint", false, {})
+
+  inWhitepointRGB_R = self:AddInput("", "WhitepointRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 20,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inWhitepointRGB_G = self:AddInput("", "WhitepointRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 20,
+    IC_ControlID = 1,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inWhitepointRGB_B = self:AddInput("", "WhitepointRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 20,
+    IC_ControlID = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Whitepoint HSV --------------------
+
+  inWhitepointHSV_H = self:AddInput("", "WhitepointHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inWhitepointHSV_S = self:AddInput("", "WhitepointHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+  })
+  inWhitepointHSV_V = self:AddInput("", "WhitepointHSV_V", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Value",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Whitepoint TMI --------------------
+
+  inWhitepointTMI_T = self:AddInput("", "WhitepointTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -4,
+    INP_MaxScale = 4,
+    INP_DoNotifyChanged = true,
+  })
+  inWhitepointTMI_M = self:AddInput("", "WhitepointTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -4,
+    INP_MaxScale = 4,
+    INP_DoNotifyChanged = true,
+  })
+  inWhitepointTMI_I = self:AddInput("", "WhitepointTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  self:EndControlNest()
+
+  inWhitepointHSV_V2 = self:AddInput("", "WhitepointHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Lift RGBA --------------------
+
+  inNestLift= self:BeginControlNest("Lift", "Lift", false, {})
+
+  inLiftRGB_R = self:AddInput("", "LiftRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 30,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+  inLiftRGB_G = self:AddInput("", "LiftRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 30,
+    IC_ControlID = 1,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+  inLiftRGB_B = self:AddInput("", "LiftRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 30,
+    IC_ControlID = 2,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Lift HSV --------------------
+
+  inLiftHSV_H = self:AddInput("", "LiftHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inLiftHSV_S = self:AddInput("", "LiftHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+  })
+  inLiftHSV_V = self:AddInput("", "LiftHSV_V", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Value",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Lift TMI --------------------
+
+  inLiftTMI_T = self:AddInput("", "LiftTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inLiftTMI_M = self:AddInput("", "LiftTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inLiftTMI_I = self:AddInput("", "LiftTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+  self:EndControlNest()
+
+  inLiftHSV_V2 = self:AddInput("", "LiftHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Gain RGBA --------------------
+
+  inNestGain = self:BeginControlNest("Gain", "Gain", false, {})
+
+  inGainRGB_R = self:AddInput("", "GainRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 40,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inGainRGB_G = self:AddInput("", "GainRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 40,
+    IC_ControlID = 1,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inGainRGB_B = self:AddInput("", "GainRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 40,
+    IC_ControlID = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Gain HSV --------------------
+
+  inGainHSV_H = self:AddInput("", "GainHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inGainHSV_S = self:AddInput("", "GainHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+  })
+  inGainHSV_V = self:AddInput("", "GainHSV_V", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Value",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Gain TMI --------------------
+
+  inGainTMI_T = self:AddInput("", "GainTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -4,
+    INP_MaxScale = 4,
+    INP_DoNotifyChanged = true,
+  })
+  inGainTMI_M = self:AddInput("", "GainTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -4,
+    INP_MaxScale = 4,
+    INP_DoNotifyChanged = true,
+  })
+  inGainTMI_I = self:AddInput("", "GainTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  self:EndControlNest()
+
+  inGainHSV_V2 = self:AddInput("", "GainHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Multiply RGBA --------------------
+
+  inNestMultiply = self:BeginControlNest("Multiply", "Multiply", false, {})
+
+  inMultiplyRGB_R = self:AddInput("", "MultiplyRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 50,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+    })
+  inMultiplyRGB_G = self:AddInput("", "MultiplyRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 50,
+    IC_ControlID = 1,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+    })
+  inMultiplyRGB_B = self:AddInput("", "MultiplyRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 50,
+    IC_ControlID = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+    })
+
+-------------------- Multiply HSV --------------------
+
+  inMultiplyHSV_H = self:AddInput("", "MultiplyHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+    })
+  inMultiplyHSV_S = self:AddInput("", "MultiplyHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+    })
+  inMultiplyHSV_V = self:AddInput("", "MultiplyHSV_V", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Value",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Multiply TMI --------------------
+
+  inMultiplyTMI_T = self:AddInput("", "MultiplyTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -4,
+    INP_MaxScale = 4,
+    INP_DoNotifyChanged = true,
+  })
+  inMultiplyTMI_M = self:AddInput("", "MultiplyTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -4,
+    INP_MaxScale = 4,
+    INP_DoNotifyChanged = true,
+  })
+  inMultiplyTMI_I = self:AddInput("", "MultiplyTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+  self:EndControlNest()
+
+  inMultiplyHSV_V2 = self:AddInput("", "MultiplyHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    INP_MinScale = 0,
+    INP_MaxScale = 4,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Offset RGBA --------------------
+
+  inNestOffset = self:BeginControlNest("Offset", "Offset", false, {})
+
+  inOffsetRGB_R = self:AddInput("", "OffsetRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 60,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+  inOffsetRGB_G = self:AddInput("", "OffsetRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 60,
+    IC_ControlID = 1,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+  inOffsetRGB_B = self:AddInput("", "OffsetRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 60,
+    IC_ControlID = 2,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_Default = 0,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Offset HSV --------------------
+
+  inOffsetHSV_H = self:AddInput("", "OffsetHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inOffsetHSV_S = self:AddInput("", "OffsetHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+  })
+  inOffsetHSV_V = self:AddInput("", "OffsetHSV_V", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Value",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Offset TMI --------------------
+
+  inOffsetTMI_T = self:AddInput("", "OffsetTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inOffsetTMI_M = self:AddInput("", "OffsetTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inOffsetTMI_I = self:AddInput("", "OffsetTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+  self:EndControlNest()
+
+  inOffsetHSV_V2 = self:AddInput("", "OffsetHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+  --  LINKS_Name = "Value",
+    INP_MinScale = -1,
+    INP_MaxScale = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Gamma RGBA --------------------
+
+  inNestGamma = self:BeginControlNest("Gamma", "Gamma", false, {})
+
+  inGammaRGB_R = self:AddInput("", "GammaRGB_R", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 70,
+    IC_ControlID = 0,
+    CLRC_ShowWheel = false,
+    INP_MinScale = 0.2,
+    INP_MaxScale = 5,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inGammaRGB_G = self:AddInput("", "GammaRGB_G", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 70,
+    IC_ControlID = 1,
+    INP_MinScale = 0.2,
+    INP_MaxScale = 5,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inGammaRGB_B = self:AddInput("", "GammaRGB_B", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "ColorControl",
+    IC_ControlGroup = 70,
+    IC_ControlID = 2,
+    INP_MinScale = 0.2,
+    INP_MaxScale = 5,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- Gamma HSV --------------------
+
+  inGammaHSV_H = self:AddInput("", "GammaHSV_H", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Hue",
+    INP_MinScale = 0,
+    INP_MaxScale = 1,
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 1,
+    INP_DoNotifyChanged = true,
+  })
+  inGammaHSV_S = self:AddInput("", "GammaHSV_S", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Saturation",
+    INP_MinAllowed = 0,
+    INP_MaxAllowed = 2,
+    INP_MinScale = 0,
+    INP_MaxScale = 2,
+    INP_DoNotifyChanged = true,
+  })
+   inGammaHSV_V = self:AddInput("", "GammaHSV_V", {
+     LINKID_DataType = "Number",
+     INPID_InputControl = "SliderControl",
+     LINKS_Name = "Value",
+     INP_MinScale = 0.2,
+     INP_MaxScale = 5,
+     INP_MinAllowed = 0,
+     INP_Default = 1,
+     ICD_Center = 1,
+     INP_DoNotifyChanged = true,
+   })
+
+-------------------- Gamma TMI --------------------
+
+  inGammaTMI_T = self:AddInput("", "GammaTMI_T", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Temperature",
+    CLRC_ShowWheel = false,
+    INP_MinScale = -5,
+    INP_MaxScale = 5,
+    INP_DoNotifyChanged = true,
+  })
+  inGammaTMI_M = self:AddInput("", "GammaTMI_M", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Magenta",
+    INP_MinScale = -5,
+    INP_MaxScale = 5,
+    INP_DoNotifyChanged = true,
+  })
+  inGammaTMI_I = self:AddInput("", "GammaTMI_I", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    LINKS_Name = "Intensity",
+    INP_MinScale = 0.2,
+    INP_MaxScale = 5,
+    INP_MinAllowed = 0,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+	self:EndControlNest()
+
+  inGammaHSV_V2 = self:AddInput("", "GammaHSV_V2", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "SliderControl",
+    INP_MinScale = 0.2,
+    INP_MaxScale = 5,
+    INP_Default = 1,
+    ICD_Center = 1,
+    INP_DoNotifyChanged = true,
+  })
+
+-------------------- reverse/black/white --------------------
+
+  inReverse = self:AddInput("Reverse", "Reverse", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "CheckboxControl",
+    INP_Default = 0,
+    ICD_Width = 0.33,
+  })
+  inBlackClamp = self:AddInput("Clip Black", "BlackClamp", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "CheckboxControl",
+    INP_Default = 1,
+    ICD_Width = 0.33,
+  })
+  inWhiteClamp = self:AddInput("Clip White", "WhiteClamp", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "CheckboxControl",
+    INP_Default = 0,
+    ICD_Width = 0.33,
+  })
+
+  inPreDivMultAlpha = self:AddInput("Pre-Divide / Post-Multiply", "PreDivMult", {
+    LINKID_DataType = "Number",
+    INPID_InputControl = "CheckboxControl",
+    INP_Default = 0,
+  })
+
+
+	InImage = self:AddInput("Input", "Input", {
+		LINKID_DataType = "Image",
+		LINK_Main = 1,
+		})
+	OutImage = self:AddOutput("Output", "Output", {
+		LINKID_DataType = "Image",
+		LINK_Main = 1,
+		})
+end
+
+
+
+function round_float(num, numDecimalPlaces)
+  return tonumber(string.format("%." .. (numDecimalPlaces or 0) .. "f", num))
+end
+
+
+Colors = {
+	h = 0, s = 0, v = 0, t = 0, m = 0, i = 0, r = 0, g = 0, b = 0,
+	rgb_to_hsv = function(self, r, g, b)
+		self.r, self.g, self.b = r, g, b
+    local h1, c
+
+    if math.abs(math.min(r, g, b)) >= math.abs(math.max(r, g, b)) then
+      r = r*-1
+      g = g*-1
+      b = b*-1
+      self.v = math.max(r, g, b) * -1
+    else
+      self.v = math.max(r, g, b)
+    end
+    local max_v = math.max(r, g, b)
+    local min_v = math.min(r, g, b)
+    c = max_v - min_v
+      self.s = c / math.abs(self.v)
+      if (c == 0) then
+        self.h = 0
+        self.s = 0
+        return self.h, self.s, self.v
+      elseif (max_v == r) then
+        h1 = ((g - b) / c) % 6
+      elseif (max_v == g) then
+        h1 = ((b - r) / c) + 2
+      elseif (max_v == b) then
+        h1 = ((r - g) / c) + 4
+      end
+    self.h = h1 / 6
+    return self.h, self.s, self.v
+    end,
+
+	hsv_to_rgb = function(self, h, s, v)
+		self.h, self.s, self.v = h, s, v
+
+    local i, f, p, q, t
+    if (s == 0) then
+      self.r, self.g, self.b = v, v, v
+      return self.r, self.g, self.b
+    end
+    i = math.floor(h * 6)
+    f = (h*6) - i
+    p = v*(1 - s)
+    q = v*(1 - s*f)
+    t = v*(1 - s*(1 - f))
+    i = i % 6
+    if (i == 0) then
+      self.r, self.g, self.b = v, t, p
+      return self.r, self.g, self.b
+    end
+    if (i == 1) then
+      self.r, self.g, self.b = q, v, p
+      return self.r, self.g, self.b
+    end
+    if (i == 2) then
+      self.r, self.g, self.b = p, v, t
+      return self.r, self.g, self.b
+    end
+    if (i == 3) then
+      self.r, self.g, self.b = p, q, v
+      return self.r, self.g, self.b
+    end
+    if (i == 4) then
+      self.r, self.g, self.b = t, p, v
+      return self.r, self.g, self.b
+    end
+    if (i == 5) then
+      self.r, self.g, self.b = v, p, q
+      return self.r, self.g, self.b
+    end
+  end,
+
+  tmi_to_rgb = function(self, t, m, i)
+    self.t, self.m, self.i = t, m, i
+    self.r = - t/2 + m/3 + i
+    self.g = - m*2/3 + i
+    self.b = t/2 + m/3 + i
+    return self.r, self.g, self.b
+  end,
+
+  rgb_to_tmi = function(self, r, g, b)
+    self.r, self.g, self.b = r, g, b
+    self.t = b - r
+    self.m = (b + r)/2 - g
+    self.i = (r + g + b)/3
+    return self.t, self.m, self.i
+  end,
+
+	setR = function(self, r)
+		self:rgb_to_hsv(r, self.g, self.b)
+    self:rgb_to_tmi(r, self.g, self.b)
+	end,
+	setG = function(self, g)
+		self:rgb_to_hsv(self.r, g, self.b)
+    self:rgb_to_tmi(self.r, g, self.b)
+	end,
+	setB = function(self, b)
+		self:rgb_to_hsv(self.r, self.g, b)
+    self:rgb_to_tmi(self.r, self.g, b)
+	end,
+
+  setH = function(self, h)
+    self:hsv_to_rgb(h, self.s, self.v)
+    self:rgb_to_tmi(self.r, self.g, self.b)
+  end,
+  setS = function(self, s)
+    self:hsv_to_rgb(self.h, s, self.v)
+    self:rgb_to_tmi(self.r, self.g, self.b)
+  end,
+  setV = function(self, v)
+    self:hsv_to_rgb(self.h, self.s, v)
+    self:rgb_to_tmi(self.r, self.g, self.b)
+  end,
+
+  setT = function(self, t)
+    self:tmi_to_rgb(t, self.m, self.i)
+    self:rgb_to_hsv(self.r, self.g, self.b)
+  end,
+  setM = function(self, m)
+    self:tmi_to_rgb(self.t, m, self.i)
+    self:rgb_to_hsv(self.r, self.g, self.b)
+  end,
+  setI = function(self, i)
+    self:tmi_to_rgb(self.t, self.m, i)
+    self:rgb_to_hsv(self.r, self.g, self.b)
+	end
+}
+
+-- constructor
+mt = {}
+mt.__index = Colors
+function Colors:new(s)
+	return setmetatable({ value = s or '' }, mt)
+end
+
+function NotifyChanged(inp, param, time)
+  -- init
+  if blackpointColors == nil then
+    blackpointColors = Colors:new()
+    blackpointColors:rgb_to_hsv(0, 0, 0)	
+  end
+  if whitepointColors == nil then
+    whitepointColors = Colors:new()
+    whitepointColors:rgb_to_hsv(1, 1, 1)
+  end
+  if liftColors == nil then
+    liftColors = Colors:new()
+    liftColors:rgb_to_hsv(0, 0, 0)
+  end
+  if gainColors == nil then
+    gainColors = Colors:new()
+    gainColors:rgb_to_hsv(1, 1, 1)	
+  end
+  if multiplyColors == nil then
+    multiplyColors = Colors:new()
+    multiplyColors:rgb_to_hsv(1, 1, 1)
+  end
+  if offsetColors == nil then
+    offsetColors = Colors:new()
+    offsetColors:rgb_to_hsv(0, 0, 0)	
+  end
+  if gammaColors == nil then
+    gammaColors = Colors:new()
+    gammaColors:rgb_to_hsv(1, 1, 1)
+  end
+
+  if (param ~= nil) then
+  ------------------------------ Blackpoint ------------------------------------
+    if inp == inBlackpointRGB_R and blackpointColors.r ~= param.Value then
+      blackpointColors:setR(param.Value)
+      inBlackpointHSV_H:SetSource(Number(blackpointColors.h), time, 0)
+      inBlackpointHSV_S:SetSource(Number(blackpointColors.s), time, 0)
+      inBlackpointHSV_V:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointHSV_V2:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+
+    elseif inp == inBlackpointRGB_G and blackpointColors.g ~= param.Value then
+      blackpointColors:setG(param.Value)
+      inBlackpointHSV_H:SetSource(Number(blackpointColors.h), time, 0)
+      inBlackpointHSV_S:SetSource(Number(blackpointColors.s), time, 0)
+      inBlackpointHSV_V:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointHSV_V2:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+
+    elseif inp == inBlackpointRGB_B and blackpointColors.b ~= param.Value then
+      blackpointColors:setB(param.Value)
+      inBlackpointHSV_H:SetSource(Number(blackpointColors.h), time, 0)
+      inBlackpointHSV_S:SetSource(Number(blackpointColors.s), time, 0)
+      inBlackpointHSV_V:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointHSV_V2:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+
+    elseif inp == inBlackpointHSV_H and blackpointColors.h ~= param.Value then
+      blackpointColors:setH(param.Value)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+
+    elseif inp == inBlackpointHSV_S and blackpointColors.s ~= param.Value then
+      blackpointColors:setS(param.Value)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+    elseif inp == inBlackpointHSV_V and blackpointColors.v ~= param.Value then
+      blackpointColors:setV(param.Value)
+      inBlackpointHSV_V2:SetSource(Number(param.Value), time, 0)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+
+    elseif inp == inBlackpointHSV_V2 and blackpointColors.v ~= param.Value then
+      blackpointColors:setV(param.Value)
+      inBlackpointHSV_V:SetSource(Number(param.Value), time, 0)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointTMI_T:SetSource(Number(blackpointColors.t), time, 0)
+      inBlackpointTMI_M:SetSource(Number(blackpointColors.m), time, 0)
+      inBlackpointTMI_I:SetSource(Number(blackpointColors.i), time, 0)
+
+    elseif inp == inBlackpointTMI_T and blackpointColors.t ~= param.Value then
+      blackpointColors:setT(param.Value)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointHSV_H:SetSource(Number(blackpointColors.h), time, 0)
+      inBlackpointHSV_S:SetSource(Number(blackpointColors.s), time, 0)
+      inBlackpointHSV_V:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointHSV_V2:SetSource(Number(blackpointColors.v), time, 0)
+
+    elseif inp == inBlackpointTMI_M and blackpointColors.m ~= param.Value then
+      blackpointColors:setM(param.Value)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointHSV_H:SetSource(Number(blackpointColors.h), time, 0)
+      inBlackpointHSV_S:SetSource(Number(blackpointColors.s), time, 0)
+      inBlackpointHSV_V:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointHSV_V2:SetSource(Number(blackpointColors.v), time, 0)
+
+    elseif inp == inBlackpointTMI_I and blackpointColors.i ~= param.Value then
+      blackpointColors:setI(param.Value)
+      inBlackpointRGB_R:SetSource(Number(blackpointColors.r), time, 0)
+      inBlackpointRGB_G:SetSource(Number(blackpointColors.g), time, 0)
+      inBlackpointRGB_B:SetSource(Number(blackpointColors.b), time, 0)
+      inBlackpointHSV_H:SetSource(Number(blackpointColors.h), time, 0)
+      inBlackpointHSV_S:SetSource(Number(blackpointColors.s), time, 0)
+      inBlackpointHSV_V:SetSource(Number(blackpointColors.v), time, 0)
+      inBlackpointHSV_V2:SetSource(Number(blackpointColors.v), time, 0)
+
+  ------------------------------ Whitepoint ------------------------------------
+
+    elseif inp == inWhitepointRGB_R and whitepointColors.r ~= param.Value then
+      whitepointColors:setR(param.Value)
+      inWhitepointHSV_H:SetSource(Number(whitepointColors.h), time, 0)
+      inWhitepointHSV_S:SetSource(Number(whitepointColors.s), time, 0)
+      inWhitepointHSV_V:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointHSV_V2:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+
+    elseif inp == inWhitepointRGB_G and whitepointColors.g ~= param.Value then
+      whitepointColors:setG(param.Value)
+      inWhitepointHSV_H:SetSource(Number(whitepointColors.h), time, 0)
+      inWhitepointHSV_S:SetSource(Number(whitepointColors.s), time, 0)
+      inWhitepointHSV_V:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointHSV_V2:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+
+    elseif inp == inWhitepointRGB_B and whitepointColors.b ~= param.Value then
+      whitepointColors:setB(param.Value)
+      inWhitepointHSV_H:SetSource(Number(whitepointColors.h), time, 0)
+      inWhitepointHSV_S:SetSource(Number(whitepointColors.s), time, 0)
+      inWhitepointHSV_V:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointHSV_V2:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+
+    elseif inp == inWhitepointHSV_H and whitepointColors.h ~= param.Value then
+      whitepointColors:setH(param.Value)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+
+    elseif inp == inWhitepointHSV_S and whitepointColors.s ~= param.Value then
+      whitepointColors:setS(param.Value)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+    elseif inp == inWhitepointHSV_V and whitepointColors.v ~= param.Value then
+      whitepointColors:setV(param.Value)
+      inWhitepointHSV_V2:SetSource(Number(param.Value), time, 0)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+
+    elseif inp == inWhitepointHSV_V2 and whitepointColors.v ~= param.Value then
+      whitepointColors:setV(param.Value)
+      inWhitepointHSV_V:SetSource(Number(param.Value), time, 0)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointTMI_T:SetSource(Number(whitepointColors.t), time, 0)
+      inWhitepointTMI_M:SetSource(Number(whitepointColors.m), time, 0)
+      inWhitepointTMI_I:SetSource(Number(whitepointColors.i), time, 0)
+
+    elseif inp == inWhitepointTMI_T and whitepointColors.t ~= param.Value then
+      whitepointColors:setT(param.Value)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointHSV_H:SetSource(Number(whitepointColors.h), time, 0)
+      inWhitepointHSV_S:SetSource(Number(whitepointColors.s), time, 0)
+      inWhitepointHSV_V:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointHSV_V2:SetSource(Number(whitepointColors.v), time, 0)
+
+    elseif inp == inWhitepointTMI_M and whitepointColors.m ~= param.Value then
+      whitepointColors:setM(param.Value)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointHSV_H:SetSource(Number(whitepointColors.h), time, 0)
+      inWhitepointHSV_S:SetSource(Number(whitepointColors.s), time, 0)
+      inWhitepointHSV_V:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointHSV_V2:SetSource(Number(whitepointColors.v), time, 0)
+
+    elseif inp == inWhitepointTMI_I and whitepointColors.i ~= param.Value then
+      whitepointColors:setI(param.Value)
+      inWhitepointRGB_R:SetSource(Number(whitepointColors.r), time, 0)
+      inWhitepointRGB_G:SetSource(Number(whitepointColors.g), time, 0)
+      inWhitepointRGB_B:SetSource(Number(whitepointColors.b), time, 0)
+      inWhitepointHSV_H:SetSource(Number(whitepointColors.h), time, 0)
+      inWhitepointHSV_S:SetSource(Number(whitepointColors.s), time, 0)
+      inWhitepointHSV_V:SetSource(Number(whitepointColors.v), time, 0)
+      inWhitepointHSV_V2:SetSource(Number(whitepointColors.v), time, 0)
+
+
+  ------------------------------ Lift ------------------------------------------
+
+    elseif inp == inLiftRGB_R and liftColors.r ~= param.Value then
+      liftColors:setR(param.Value)
+      inLiftHSV_H:SetSource(Number(liftColors.h), time, 0)
+      inLiftHSV_S:SetSource(Number(liftColors.s), time, 0)
+      inLiftHSV_V:SetSource(Number(liftColors.v), time, 0)
+      inLiftHSV_V2:SetSource(Number(liftColors.v), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+
+    elseif inp == inLiftRGB_G and liftColors.g ~= param.Value then
+      liftColors:setG(param.Value)
+      inLiftHSV_H:SetSource(Number(liftColors.h), time, 0)
+      inLiftHSV_S:SetSource(Number(liftColors.s), time, 0)
+      inLiftHSV_V:SetSource(Number(liftColors.v), time, 0)
+      inLiftHSV_V2:SetSource(Number(liftColors.v), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+
+    elseif inp == inLiftRGB_B and liftColors.b ~= param.Value then
+      liftColors:setB(param.Value)
+      inLiftHSV_H:SetSource(Number(liftColors.h), time, 0)
+      inLiftHSV_S:SetSource(Number(liftColors.s), time, 0)
+      inLiftHSV_V:SetSource(Number(liftColors.v), time, 0)
+      inLiftHSV_V2:SetSource(Number(liftColors.v), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+
+    elseif inp == inLiftHSV_H and liftColors.h ~= param.Value then
+      liftColors:setH(param.Value)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+
+    elseif inp == inLiftHSV_S and liftColors.s ~= param.Value then
+      liftColors:setS(param.Value)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+    elseif inp == inLiftHSV_V and liftColors.v ~= param.Value then
+      liftColors:setV(param.Value)
+      inLiftHSV_V2:SetSource(Number(param.Value), time, 0)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+
+    elseif inp == inLiftHSV_V2 and liftColors.v ~= param.Value then
+      liftColors:setV(param.Value)
+      inLiftHSV_V:SetSource(Number(param.Value), time, 0)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftTMI_T:SetSource(Number(liftColors.t), time, 0)
+      inLiftTMI_M:SetSource(Number(liftColors.m), time, 0)
+      inLiftTMI_I:SetSource(Number(liftColors.i), time, 0)
+
+    elseif inp == inLiftTMI_T and liftColors.t ~= param.Value then
+      liftColors:setT(param.Value)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftHSV_H:SetSource(Number(liftColors.h), time, 0)
+      inLiftHSV_S:SetSource(Number(liftColors.s), time, 0)
+      inLiftHSV_V:SetSource(Number(liftColors.v), time, 0)
+      inLiftHSV_V2:SetSource(Number(liftColors.v), time, 0)
+
+    elseif inp == inLiftTMI_M and liftColors.m ~= param.Value then
+      liftColors:setM(param.Value)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftHSV_H:SetSource(Number(liftColors.h), time, 0)
+      inLiftHSV_S:SetSource(Number(liftColors.s), time, 0)
+      inLiftHSV_V:SetSource(Number(liftColors.v), time, 0)
+      inLiftHSV_V2:SetSource(Number(liftColors.v), time, 0)
+
+    elseif inp == inLiftTMI_I and liftColors.i ~= param.Value then
+      liftColors:setI(param.Value)
+      inLiftRGB_R:SetSource(Number(liftColors.r), time, 0)
+      inLiftRGB_G:SetSource(Number(liftColors.g), time, 0)
+      inLiftRGB_B:SetSource(Number(liftColors.b), time, 0)
+      inLiftHSV_H:SetSource(Number(liftColors.h), time, 0)
+      inLiftHSV_S:SetSource(Number(liftColors.s), time, 0)
+      inLiftHSV_V:SetSource(Number(liftColors.v), time, 0)
+      inLiftHSV_V2:SetSource(Number(liftColors.v), time, 0)
+
+  -------------------------------- Gain ------------------------------------------
+    elseif inp == inGainRGB_R and gainColors.r ~= param.Value then
+      gainColors:setR(param.Value)
+      inGainHSV_H:SetSource(Number(gainColors.h), time, 0)
+      inGainHSV_S:SetSource(Number(gainColors.s), time, 0)
+      inGainHSV_V:SetSource(Number(gainColors.v), time, 0)
+      inGainHSV_V2:SetSource(Number(gainColors.v), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainRGB_G and gainColors.g ~= param.Value then
+      gainColors:setG(param.Value)
+      inGainHSV_H:SetSource(Number(gainColors.h), time, 0)
+      inGainHSV_S:SetSource(Number(gainColors.s), time, 0)
+      inGainHSV_V:SetSource(Number(gainColors.v), time, 0)
+      inGainHSV_V2:SetSource(Number(gainColors.v), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainRGB_B and gainColors.b ~= param.Value then
+      gainColors:setB(param.Value)
+      inGainHSV_H:SetSource(Number(gainColors.h), time, 0)
+      inGainHSV_S:SetSource(Number(gainColors.s), time, 0)
+      inGainHSV_V:SetSource(Number(gainColors.v), time, 0)
+      inGainHSV_V2:SetSource(Number(gainColors.v), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainHSV_H and gainColors.h ~= param.Value then
+      gainColors:setH(param.Value)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainHSV_S and gainColors.s ~= param.Value then
+      gainColors:setS(param.Value)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainHSV_V and gainColors.v ~= param.Value then
+      gainColors:setV(param.Value)
+      inGainHSV_V2:SetSource(Number(param.Value), time, 0)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainHSV_V2 and gainColors.v ~= param.Value then
+      gainColors:setV(param.Value)
+      inGainHSV_V:SetSource(Number(param.Value), time, 0)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainTMI_T:SetSource(Number(gainColors.t), time, 0)
+      inGainTMI_M:SetSource(Number(gainColors.m), time, 0)
+      inGainTMI_I:SetSource(Number(gainColors.i), time, 0)
+
+    elseif inp == inGainTMI_T and gainColors.t ~= param.Value then
+      gainColors:setT(param.Value)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainHSV_H:SetSource(Number(gainColors.h), time, 0)
+      inGainHSV_S:SetSource(Number(gainColors.s), time, 0)
+      inGainHSV_V:SetSource(Number(gainColors.v), time, 0)
+      inGainHSV_V2:SetSource(Number(gainColors.v), time, 0)
+
+    elseif inp == inGainTMI_M and gainColors.m ~= param.Value then
+      gainColors:setM(param.Value)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainHSV_H:SetSource(Number(gainColors.h), time, 0)
+      inGainHSV_S:SetSource(Number(gainColors.s), time, 0)
+      inGainHSV_V:SetSource(Number(gainColors.v), time, 0)
+      inGainHSV_V2:SetSource(Number(gainColors.v), time, 0)
+
+    elseif inp == inGainTMI_I and gainColors.i ~= param.Value then
+      gainColors:setI(param.Value)
+      inGainRGB_R:SetSource(Number(gainColors.r), time, 0)
+      inGainRGB_G:SetSource(Number(gainColors.g), time, 0)
+      inGainRGB_B:SetSource(Number(gainColors.b), time, 0)
+      inGainHSV_H:SetSource(Number(gainColors.h), time, 0)
+      inGainHSV_S:SetSource(Number(gainColors.s), time, 0)
+      inGainHSV_V:SetSource(Number(gainColors.v), time, 0)
+      inGainHSV_V2:SetSource(Number(gainColors.v), time, 0)
+
+  ------------------------------ Multiply --------------------------------------
+
+    elseif inp == inMultiplyRGB_R and multiplyColors.r ~= param.Value then
+      multiplyColors:setR(param.Value)
+      inMultiplyHSV_H:SetSource(Number(multiplyColors.h), time, 0)
+      inMultiplyHSV_S:SetSource(Number(multiplyColors.s), time, 0)
+      inMultiplyHSV_V:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyHSV_V2:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyRGB_G and multiplyColors.g ~= param.Value then
+      multiplyColors:setG(param.Value)
+      inMultiplyHSV_H:SetSource(Number(multiplyColors.h), time, 0)
+      inMultiplyHSV_S:SetSource(Number(multiplyColors.s), time, 0)
+      inMultiplyHSV_V:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyHSV_V2:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyRGB_B and multiplyColors.b ~= param.Value then
+      multiplyColors:setB(param.Value)
+      inMultiplyHSV_H:SetSource(Number(multiplyColors.h), time, 0)
+      inMultiplyHSV_S:SetSource(Number(multiplyColors.s), time, 0)
+      inMultiplyHSV_V:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyHSV_V2:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyHSV_H and multiplyColors.h ~= param.Value then
+      multiplyColors:setH(param.Value)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyHSV_S and multiplyColors.s ~= param.Value then
+      multiplyColors:setS(param.Value)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyHSV_V and multiplyColors.v ~= param.Value then
+      multiplyColors:setV(param.Value)
+      inMultiplyHSV_V2:SetSource(Number(param.Value), time, 0)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyHSV_V2 and multiplyColors.v ~= param.Value then
+      multiplyColors:setV(param.Value)
+      inMultiplyHSV_V:SetSource(Number(param.Value), time, 0)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyTMI_T:SetSource(Number(multiplyColors.t), time, 0)
+      inMultiplyTMI_M:SetSource(Number(multiplyColors.m), time, 0)
+      inMultiplyTMI_I:SetSource(Number(multiplyColors.i), time, 0)
+
+    elseif inp == inMultiplyTMI_T and multiplyColors.t ~= param.Value then
+      multiplyColors:setT(param.Value)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyHSV_H:SetSource(Number(multiplyColors.h), time, 0)
+      inMultiplyHSV_S:SetSource(Number(multiplyColors.s), time, 0)
+      inMultiplyHSV_V:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyHSV_V2:SetSource(Number(multiplyColors.v), time, 0)
+
+    elseif inp == inMultiplyTMI_M and multiplyColors.m ~= param.Value then
+      multiplyColors:setM(param.Value)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyHSV_H:SetSource(Number(multiplyColors.h), time, 0)
+      inMultiplyHSV_S:SetSource(Number(multiplyColors.s), time, 0)
+      inMultiplyHSV_V:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyHSV_V2:SetSource(Number(multiplyColors.v), time, 0)
+
+    elseif inp == inMultiplyTMI_I and multiplyColors.i ~= param.Value then
+      multiplyColors:setI(param.Value)
+      inMultiplyRGB_R:SetSource(Number(multiplyColors.r), time, 0)
+      inMultiplyRGB_G:SetSource(Number(multiplyColors.g), time, 0)
+      inMultiplyRGB_B:SetSource(Number(multiplyColors.b), time, 0)
+      inMultiplyHSV_H:SetSource(Number(multiplyColors.h), time, 0)
+      inMultiplyHSV_S:SetSource(Number(multiplyColors.s), time, 0)
+      inMultiplyHSV_V:SetSource(Number(multiplyColors.v), time, 0)
+      inMultiplyHSV_V2:SetSource(Number(multiplyColors.v), time, 0)
+
+  ------------------------------ Offset ----------------------------------------
+
+    elseif inp == inOffsetRGB_R and offsetColors.r ~= param.Value then
+      offsetColors:setR(param.Value)
+      inOffsetHSV_H:SetSource(Number(offsetColors.h), time, 0)
+      inOffsetHSV_S:SetSource(Number(offsetColors.s), time, 0)
+      inOffsetHSV_V:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetHSV_V2:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetRGB_G and offsetColors.g ~= param.Value then
+      offsetColors:setG(param.Value)
+      inOffsetHSV_H:SetSource(Number(offsetColors.h), time, 0)
+      inOffsetHSV_S:SetSource(Number(offsetColors.s), time, 0)
+      inOffsetHSV_V:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetHSV_V2:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetRGB_B and offsetColors.b ~= param.Value then
+      offsetColors:setB(param.Value)
+      inOffsetHSV_H:SetSource(Number(offsetColors.h), time, 0)
+      inOffsetHSV_S:SetSource(Number(offsetColors.s), time, 0)
+      inOffsetHSV_V:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetHSV_V2:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetHSV_H and offsetColors.h ~= param.Value then
+      offsetColors:setH(param.Value)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetHSV_S and offsetColors.s ~= param.Value then
+      offsetColors:setS(param.Value)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetHSV_V and offsetColors.v ~= param.Value then
+      offsetColors:setV(param.Value)
+      inOffsetHSV_V2:SetSource(Number(param.Value), time, 0)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetHSV_V2 and offsetColors.v ~= param.Value then
+      offsetColors:setV(param.Value)
+      inOffsetHSV_V:SetSource(Number(param.Value), time, 0)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetTMI_T:SetSource(Number(offsetColors.t), time, 0)
+      inOffsetTMI_M:SetSource(Number(offsetColors.m), time, 0)
+      inOffsetTMI_I:SetSource(Number(offsetColors.i), time, 0)
+
+    elseif inp == inOffsetTMI_T and offsetColors.t ~= param.Value then
+      offsetColors:setT(param.Value)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetHSV_H:SetSource(Number(offsetColors.h), time, 0)
+      inOffsetHSV_S:SetSource(Number(offsetColors.s), time, 0)
+      inOffsetHSV_V:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetHSV_V2:SetSource(Number(offsetColors.v), time, 0)
+
+    elseif inp == inOffsetTMI_M and offsetColors.m ~= param.Value then
+      offsetColors:setM(param.Value)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetHSV_H:SetSource(Number(offsetColors.h), time, 0)
+      inOffsetHSV_S:SetSource(Number(offsetColors.s), time, 0)
+      inOffsetHSV_V:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetHSV_V2:SetSource(Number(offsetColors.v), time, 0)
+
+    elseif inp == inOffsetTMI_I and offsetColors.i ~= param.Value then
+      offsetColors:setI(param.Value)
+      inOffsetRGB_R:SetSource(Number(offsetColors.r), time, 0)
+      inOffsetRGB_G:SetSource(Number(offsetColors.g), time, 0)
+      inOffsetRGB_B:SetSource(Number(offsetColors.b), time, 0)
+      inOffsetHSV_H:SetSource(Number(offsetColors.h), time, 0)
+      inOffsetHSV_S:SetSource(Number(offsetColors.s), time, 0)
+      inOffsetHSV_V:SetSource(Number(offsetColors.v), time, 0)
+      inOffsetHSV_V2:SetSource(Number(offsetColors.v), time, 0)
+
+  ------------------------------ Gamma -----------------------------------------
+
+    elseif inp == inGammaRGB_R and gammaColors.r ~= param.Value then
+      gammaColors:setR(param.Value)
+      inGammaHSV_H:SetSource(Number(gammaColors.h), time, 0)
+      inGammaHSV_S:SetSource(Number(gammaColors.s), time, 0)
+      inGammaHSV_V:SetSource(Number(gammaColors.v), time, 0)
+      inGammaHSV_V2:SetSource(Number(gammaColors.v), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaRGB_G and gammaColors.g ~= param.Value then
+      gammaColors:setG(param.Value)
+      inGammaHSV_H:SetSource(Number(gammaColors.h), time, 0)
+      inGammaHSV_S:SetSource(Number(gammaColors.s), time, 0)
+      inGammaHSV_V:SetSource(Number(gammaColors.v), time, 0)
+      inGammaHSV_V2:SetSource(Number(gammaColors.v), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaRGB_B and gammaColors.b ~= param.Value then
+      gammaColors:setB(param.Value)
+      inGammaHSV_H:SetSource(Number(gammaColors.h), time, 0)
+      inGammaHSV_S:SetSource(Number(gammaColors.s), time, 0)
+      inGammaHSV_V:SetSource(Number(gammaColors.v), time, 0)
+      inGammaHSV_V2:SetSource(Number(gammaColors.v), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaHSV_H and gammaColors.h ~= param.Value then
+      gammaColors:setH(param.Value)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaHSV_S and gammaColors.s ~= param.Value then
+      gammaColors:setS(param.Value)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaHSV_V and gammaColors.v ~= param.Value then
+      gammaColors:setV(param.Value)
+      inGammaHSV_V2:SetSource(Number(param.Value), time, 0)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaHSV_V2 and gammaColors.v ~= param.Value then
+      gammaColors:setV(param.Value)
+      inGammaHSV_V:SetSource(Number(param.Value), time, 0)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaTMI_T:SetSource(Number(gammaColors.t), time, 0)
+      inGammaTMI_M:SetSource(Number(gammaColors.m), time, 0)
+      inGammaTMI_I:SetSource(Number(gammaColors.i), time, 0)
+
+    elseif inp == inGammaTMI_T and gammaColors.t ~= param.Value then
+      gammaColors:setT(param.Value)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaHSV_H:SetSource(Number(gammaColors.h), time, 0)
+      inGammaHSV_S:SetSource(Number(gammaColors.s), time, 0)
+      inGammaHSV_V:SetSource(Number(gammaColors.v), time, 0)
+      inGammaHSV_V2:SetSource(Number(gammaColors.v), time, 0)
+
+    elseif inp == inGammaTMI_M and gammaColors.m ~= param.Value then
+      gammaColors:setM(param.Value)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaHSV_H:SetSource(Number(gammaColors.h), time, 0)
+      inGammaHSV_S:SetSource(Number(gammaColors.s), time, 0)
+      inGammaHSV_V:SetSource(Number(gammaColors.v), time, 0)
+      inGammaHSV_V2:SetSource(Number(gammaColors.v), time, 0)
+
+    elseif inp == inGammaTMI_I and gammaColors.i ~= param.Value then
+      gammaColors:setI(param.Value)
+      inGammaRGB_R:SetSource(Number(gammaColors.r), time, 0)
+      inGammaRGB_G:SetSource(Number(gammaColors.g), time, 0)
+      inGammaRGB_B:SetSource(Number(gammaColors.b), time, 0)
+      inGammaHSV_H:SetSource(Number(gammaColors.h), time, 0)
+      inGammaHSV_S:SetSource(Number(gammaColors.s), time, 0)
+      inGammaHSV_V:SetSource(Number(gammaColors.v), time, 0)
+      inGammaHSV_V2:SetSource(Number(gammaColors.v), time, 0)
+    end
+  end
+end
+
+function mp_clipwhite(x, y, p)
+  p.R = math.min(p.R, 1)
+	p.G = math.min(p.G, 1)
+	p.B = math.min(p.B, 1)
+  return p
+end
+
+function mp_clipblack(x, y, p)
+	p.R = math.max(p.R, 0)
+	p.G = math.max(p.G, 0)
+	p.B = math.max(p.B, 0)
+  return p
+end
+
+function Process(req)
+
+  function calc(blackpoint, whitepoint, lift, gain, multiply, offset)
+    A = whitepoint - blackpoint
+    A = A ~= 0 and (gain - lift) / A or 10000
+    A = A * multiply
+    B = offset + lift - blackpoint * A
+    return A, B
+  end
+
+  function invert(A, B, gamma)
+    if (A ~= 1) or B then
+      if A ~= 0 then
+        A = 1/A
+      else
+        A = 1
+      end
+    B = -B * A
+    end
+    gamma = 1/gamma --inf if gamma 0
+    return A, B, gamma
+  end
+
+
+  local blackpoint_r = inBlackpointRGB_R:GetValue(req).Value
+  local blackpoint_g = inBlackpointRGB_G:GetValue(req).Value
+  local blackpoint_b = inBlackpointRGB_B:GetValue(req).Value
+
+  local whitepoint_r = inWhitepointRGB_R:GetValue(req).Value
+  local whitepoint_g = inWhitepointRGB_G:GetValue(req).Value
+  local whitepoint_b = inWhitepointRGB_B:GetValue(req).Value
+
+  local lift_r = inLiftRGB_R:GetValue(req).Value
+  local lift_g = inLiftRGB_G:GetValue(req).Value
+  local lift_b = inLiftRGB_B:GetValue(req).Value
+
+  local gain_r = inGainRGB_R:GetValue(req).Value
+  local gain_g = inGainRGB_G:GetValue(req).Value
+  local gain_b = inGainRGB_B:GetValue(req).Value
+
+  local multiply_r = inMultiplyRGB_R:GetValue(req).Value
+  local multiply_g = inMultiplyRGB_G:GetValue(req).Value
+  local multiply_b = inMultiplyRGB_B:GetValue(req).Value
+
+  local offset_r = inOffsetRGB_R:GetValue(req).Value
+  local offset_g = inOffsetRGB_G:GetValue(req).Value
+  local offset_b = inOffsetRGB_B:GetValue(req).Value
+
+  local gamma_r = inGammaRGB_R:GetValue(req).Value
+  local gamma_g = inGammaRGB_G:GetValue(req).Value
+  local gamma_b = inGammaRGB_B:GetValue(req).Value
+
+  local reverse = (inReverse:GetValue(req).Value ~= 0)
+  local white_clamp = (inWhiteClamp:GetValue(req).Value ~= 0)
+  local black_clamp = (inBlackClamp:GetValue(req).Value ~= 0)
+  local prediv = (inPreDivMultAlpha:GetValue(req).Value ~= 0)
+
+  local orig = InImage:GetValue(req)
+  local temp32 = Image({IMG_Like = orig, IMG_Depth = 8})
+  orig:Crop(temp32, {CROP_XOffset = 0, CROP_YOffset = 0})
+
+
+---- do processing
+
+  if prediv then
+      temp32:AlphaDivide()
+  end
+
+  Ar, Br = calc(blackpoint_r, whitepoint_r, lift_r, gain_r, multiply_r, offset_r)
+  Ag, Bg = calc(blackpoint_g, whitepoint_g, lift_g, gain_g, multiply_g, offset_g)
+  Ab, Bb = calc(blackpoint_b, whitepoint_b, lift_b, gain_b, multiply_b, offset_b)
+
+  if gamma_r < 0 then
+    gamma_r = 0
+  end
+  if gamma_g < 0 then
+    gamma_g = 0
+  end
+  if gamma_b < 0 then
+    gamma_b = 0
+  end
+
+  if reverse then
+    Ar, Br, gamma_r = invert(Ar, Br, gamma_r)
+    Ag, Bg, gamma_g = invert(Ag, Bg, gamma_g)
+    Ab, Bb, gamma_b = invert(Ab, Bb, gamma_b)
+
+    m = ColorMatrix()
+    m:Scale(Ar, Ag, Ab)
+    m:Offset(Br, Bg, Bb)
+
+    temp32:Gamma(gamma_r, gamma_g, gamma_b, 1)
+    temp32 = temp32:ApplyMatrixOf(m, {})
+  else
+    m = ColorMatrix()
+    m:Scale(Ar, Ag, Ab)
+    m:Offset(Br, Bg, Bb)
+
+    temp32 = temp32:ApplyMatrixOf(m, {})
+    temp32:Gamma(gamma_r, gamma_g, gamma_b, 1)
+  end
+
+
+  if black_clamp then
+    temp32:MultiProcessPixels(nil, {}, 0,0, temp32.Width, temp32.Height, temp32, mp_clipblack)
+  end
+
+  if white_clamp then
+    temp32:MultiProcessPixels(nil, {}, 0,0, temp32.Width, temp32.Height, temp32, mp_clipwhite)
+  end
+
+  if prediv then
+    temp32:AlphaMultiply()
+  end
+
+---- end processing
+
+
+  out = Image({IMG_Like = orig})
+  temp32:Crop(out, {CROP_XOffset = 0, CROP_YOffset = 0})
+
+	OutImage:Set(req, out)
+end
