@@ -63,9 +63,9 @@ FuRegisterClass("Grade", CT_Tool, {
   REGS_OpIconString = "Gra",
   REGS_OpDescription = "Grade Node",
   REGS_Company = "Artem Hlezin",
-	REGS_URL = "http://www.artemhlezin.com",
+  REGS_URL = "http://www.artemhlezin.com",
   REG_NoMotionBlurCtrls = true,
-	REG_Source_DepthCtrls = true,
+  REG_Source_DepthCtrls = true,
 
   })
 
@@ -831,7 +831,7 @@ function Create()
     INP_DoNotifyChanged = true,
   })
 
-	self:EndControlNest()
+  self:EndControlNest()
 
   inGammaHSV_V2 = self:AddInput("", "GammaHSV_V2", {
     LINKID_DataType = "Number",
@@ -871,14 +871,14 @@ function Create()
   })
 
 
-	InImage = self:AddInput("Input", "Input", {
-		LINKID_DataType = "Image",
-		LINK_Main = 1,
-		})
-	OutImage = self:AddOutput("Output", "Output", {
-		LINKID_DataType = "Image",
-		LINK_Main = 1,
-		})
+  InImage = self:AddInput("Input", "Input", {
+    LINKID_DataType = "Image",
+    LINK_Main = 1,
+    })
+  OutImage = self:AddOutput("Output", "Output", {
+    LINKID_DataType = "Image",
+    LINK_Main = 1,
+    })
 end
 
 
@@ -889,9 +889,9 @@ end
 
 
 Colors = {
-	h = 0, s = 0, v = 0, t = 0, m = 0, i = 0, r = 0, g = 0, b = 0,
-	rgb_to_hsv = function(self, r, g, b)
-		self.r, self.g, self.b = r, g, b
+  h = 0, s = 0, v = 0, t = 0, m = 0, i = 0, r = 0, g = 0, b = 0,
+  rgb_to_hsv = function(self, r, g, b)
+    self.r, self.g, self.b = r, g, b
     local h1, c
 
     if math.abs(math.min(r, g, b)) >= math.abs(math.max(r, g, b)) then
@@ -921,8 +921,8 @@ Colors = {
     return self.h, self.s, self.v
     end,
 
-	hsv_to_rgb = function(self, h, s, v)
-		self.h, self.s, self.v = h, s, v
+  hsv_to_rgb = function(self, h, s, v)
+    self.h, self.s, self.v = h, s, v
 
     local i, f, p, q, t
     if (s == 0) then
@@ -977,18 +977,18 @@ Colors = {
     return self.t, self.m, self.i
   end,
 
-	setR = function(self, r)
-		self:rgb_to_hsv(r, self.g, self.b)
+  setR = function(self, r)
+    self:rgb_to_hsv(r, self.g, self.b)
     self:rgb_to_tmi(r, self.g, self.b)
-	end,
-	setG = function(self, g)
-		self:rgb_to_hsv(self.r, g, self.b)
+  end,
+  setG = function(self, g)
+    self:rgb_to_hsv(self.r, g, self.b)
     self:rgb_to_tmi(self.r, g, self.b)
-	end,
-	setB = function(self, b)
-		self:rgb_to_hsv(self.r, self.g, b)
+  end,
+  setB = function(self, b)
+    self:rgb_to_hsv(self.r, self.g, b)
     self:rgb_to_tmi(self.r, self.g, b)
-	end,
+  end,
 
   setH = function(self, h)
     self:hsv_to_rgb(h, self.s, self.v)
@@ -1014,14 +1014,14 @@ Colors = {
   setI = function(self, i)
     self:tmi_to_rgb(self.t, self.m, i)
     self:rgb_to_hsv(self.r, self.g, self.b)
-	end
+  end
 }
 
 -- constructor
 mt = {}
 mt.__index = Colors
 function Colors:new(s)
-	return setmetatable({ value = s or '' }, mt)
+  return setmetatable({ value = s or '' }, mt)
 end
 
 function NotifyChanged(inp, param, time)
@@ -1757,15 +1757,15 @@ end
 
 function mp_clipwhite(x, y, p)
   p.R = math.min(p.R, 1)
-	p.G = math.min(p.G, 1)
-	p.B = math.min(p.B, 1)
+  p.G = math.min(p.G, 1)
+  p.B = math.min(p.B, 1)
   return p
 end
 
 function mp_clipblack(x, y, p)
-	p.R = math.max(p.R, 0)
-	p.G = math.max(p.G, 0)
-	p.B = math.max(p.B, 0)
+  p.R = math.max(p.R, 0)
+  p.G = math.max(p.G, 0)
+  p.B = math.max(p.B, 0)
   return p
 end
 
@@ -1834,7 +1834,7 @@ function Process(req)
 ---- do processing
 
   if prediv then
-      temp32:AlphaDivide()
+    temp32:AlphaDivide()
   end
 
   Ar, Br = calc(blackpoint_r, whitepoint_r, lift_r, gain_r, multiply_r, offset_r)
@@ -1890,5 +1890,5 @@ function Process(req)
   out = Image({IMG_Like = orig})
   temp32:Crop(out, {CROP_XOffset = 0, CROP_YOffset = 0})
 
-	OutImage:Set(req, out)
+  OutImage:Set(req, out)
 end
