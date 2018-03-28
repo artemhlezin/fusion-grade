@@ -2,10 +2,12 @@
 Grade fuse for Blackmagic Fusion 9
 
 ### UI
-[![scr1](Screenshots/1.PNG)]
+
+![scr1](Screenshots/1.PNG)
 
 includes TMI/HSV sliders
-[![scr1](Screenshots/2.PNG)]
+
+![scr1](Screenshots/2.PNG)
 
 ### Issues
 Not correct gamma calculation if gamma/pixel has negative values.
